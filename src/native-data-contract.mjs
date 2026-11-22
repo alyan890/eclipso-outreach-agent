@@ -1,0 +1,38 @@
+// Allowlisted public-business research view; never an outreach authorization.
+import {assessmentView} from './research-assessment.mjs';
+import {DATA_QUALITY_VERSION,interpretSignal,verifiedOpportunity} from './business-evidence.mjs';
+const ndText=(v,n=240)=>typeof v==='string'?v.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'').slice(0,n):'';
+const ndURL=v=>{try{const u=new URL(v);return u.protocol==='https:'&&!u.username&&!u.password&&u.hostname.includes('.')&&!u.hostname.includes(':')&&!/^\d/.test(u.hostname)?u.href:null;}catch{return null;}};
+const ndTime=v=>Number.isFinite(Date.parse(v))&&Date.parse(v)<=Date.now()+60000?new Date(v).toISOString():null;
+export function copyDiscoveryAudit(value){
+ if(!value)return null;
+ const allowed=['BUSINESS_RESEARCH','LOCATION_HOLD','IDENTITY_HOLD','CATEGORY_HOLD','OFF_TARGET','ACCESS_HOLD'],seen=new Set();
+ const diagnostics=(Array.isArray(value.diagnostics)?value.diagnostics:[]).slice(0,25).flatMap(d=>{
+  const homepage=ndURL(d.homepage);if(!homepage||seen.has(homepage)||!allowed.includes(d.disposition))return [];seen.add(homepage);
+  return [{homepage,source:ndURL(d.source)??homepage,business:ndText(d.business,180),disposition:d.disposition,queryCategory:ndText(d.queryCategory,40),category:ndText(d.category,40),categoryCorrected:d.categoryCorrected===true,reason:/^[A-Z_]{3,100}$/.test(d.reason??'')?d.reason:'RESEARCH_REQUIRED',detail:ndText(d.detail,400),next:ndText(d.next,400),sourceObserved:ndTime(d.sourceObserved),retrievalAttemptedAt:ndTime(d.retrievalAttemptedAt)}];
+ });
+ return {batchId:ndText(value.batchId,100),replayedAt:ndTime(value.replayedAt),queryCount:Math.max(0,Math.min(20,Math.floor(Number(value.queryCount)||0))),source:'SAVED_VALIDATION_BATCH',diagnostics,counts:Object.fromEntries(allowed.map(s=>[s,diagnostics.filter(d=>d.disposition===s).length]))};
+}
+export function copyWebsiteEvidence(v){
+ if(v?.version!==DATA_QUALITY_VERSION)return null;
+ const states=['UNKNOWN','CONFLICTING_NOTICE','PLACEHOLDER_ONLY','NOTICE_REQUIRES_REVIEW','FUNCTIONAL_CONTENT_OBSERVED','INSUFFICIENT_COVERAGE'];
+ const n=x=>Math.max(0,Math.min(100,Math.floor(Number(x)||0)));
+ return {version:DATA_QUALITY_VERSION,state:states.includes(v.state)?v.state:'UNKNOWN',coverage:v.coverage==='CHECKED_LINKS_ONLY'?'CHECKED_LINKS_ONLY':'INCOMPLETE',checkedPages:n(v.checkedPages),uncheckedLinks:n(v.uncheckedLinks),noticeSource:ndURL(v.noticeSource),noticeObserved:ndTime(v.noticeObserved),notice:ndText(v.notice,150)||null,functionalSources:(v.functionalSources??[]).slice(0,8).filter(p=>ndURL(p.source)).map(p=>({source:ndURL(p.source),observed:ndTime(p.observed)})),pages:(v.pages??[]).slice(0,8).filter(p=>ndURL(p.source)).map(p=>({source:ndURL(p.source),observed:ndTime(p.observed),words:Math.max(0,Math.min(24000,Number(p.words)||0)),substantial:p.substantial===true,notice:ndText(p.notice,150)||null,actions:n(p.actions),truncated:p.truncated===true}))};
+}
+export function nativeDataCopy(input){
+ if(!input)return null;
+ if(input.mode!=='research_only'||input.sendingAuthorized!==false||!Array.isArray(input.rows)||input.rows.length>50||!/^[a-f0-9]{40}$/.test(input.revision??''))throw Error('NATIVE_DATA_INVALID');
+ const ids=new Set(),rows=input.rows.map(r=>{
+  if(!r.id||r.id.length>150||ids.has(r.id)||!r.business||!ndURL(r.source)||!ndTime(r.sourceObserved)||r.sendingAuthorized!==false)throw Error('NATIVE_DATA_INVALID');ids.add(r.id);
+  const copy={id:ndText(r.id,150),business:ndText(r.business,180),category:ndText(r.category,40),address:ndText(r.address),city:ndText(r.city,100),state:ndText(r.state,20),country:ndText(r.country,10),website:ndURL(r.website),source:ndURL(r.source),sourceObserved:ndTime(r.sourceObserved),researchedAt:ndTime(r.researchedAt),identityMatched:r.identityMatched===true,identityScope:['SINGLE_LOCATION','SERVICE_AREA','BRAND_NOT_SINGLE_BRANCH'].includes(r.identityScope)?r.identityScope:'SINGLE_LOCATION',locationEvidence:(r.locationEvidence??[]).slice(0,24).filter(l=>ndURL(l.source)&&ndTime(l.observed)).map(l=>({basis:ndText(l.basis,45),city:ndText(l.city,100),state:ndText(l.state,2),address:ndText(l.address),postalCode:ndText(l.postalCode,12),quote:ndText(l.quote,300),source:ndURL(l.source),observed:ndTime(l.observed)})),activeOffer:r.activeOffer===true,status:ndText(r.status,45),priorityScore:Math.max(0,Math.min(100,Number(r.priorityScore)||0)),priorityExplanation:ndText(r.priorityExplanation),bookingDetected:r.bookingDetected===true,orderingDetected:r.orderingDetected===true,harveyFitScore:Number(r.harveyFitScore)||null,harveyFitMethod:ndText(r.harveyFitMethod,80),
+   contacts:(r.contacts??[]).slice(0,12).filter(c=>/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(c.email??'')&&ndURL(c.source)).map(c=>({email:ndText(c.email,254),named_person:ndText(c.named_person,100)||null,source:ndURL(c.source),observed:ndTime(c.observed),association:'BUSINESS_PUBLISHED',mailbox_status:'UNVERIFIED',mx_host:ndText(c.mx_host,150)||null,mx_type:ndText(c.mx_type,40)})),
+   people:(r.people??[]).slice(0,8).map(p=>({full_name:ndText(p.full_name,100),title:ndText(p.title,120),owner:p.owner===true,decisionMaker:p.decisionMaker===true,historical:p.historical===true,evidence:ndText(p.evidence,400),evidence_url:ndURL(p.evidence_url)})),
+   websiteEvidence:copyWebsiteEvidence(r.websiteEvidence),functionalChecks:(r.functionalChecks??[]).slice(0,6).filter(c=>['BOOKING_FLOW_FAILURE','ORDERING_FLOW_FAILURE'].includes(c.type)&&ndURL(c.source)).map(c=>({type:c.type,result:c.result==='FAILURE_OBSERVED'?'FAILURE_OBSERVED':'UNKNOWN',identityMatched:c.identityMatched===true,expectedActionPublished:c.expectedActionPublished===true,observation:ndText(c.observation,400),source:ndURL(c.source),observed:ndTime(c.observed)})),
+   signals:(r.signals??[]).slice(0,30).map(s=>({code:ndText(s.code,60),value:s.value==null?null:typeof s.value==='number'?s.value:ndText(s.value,250),upstreamConfidence:Number(s.upstreamConfidence)||0,source:ndURL(s.source),observed:ndTime(s.observed),interpretation:interpretSignal(s)})),
+   opportunities:(r.opportunities??[]).slice(0,6).map(o=>({type:ndText(o.type,60),strength:ndText(o.strength,40),reason:ndText(o.reason,400),source:ndURL(o.source),observed:ndTime(o.observed)})),
+   pages:(r.pages??[]).slice(0,8).filter(p=>ndURL(p.source)).map(p=>({source:ndURL(p.source),observed:ndTime(p.observed),title:ndText(p.title,180)})),issues:(r.issues??[]).slice(0,10).map(s=>ndText(s,160)),revision:input.revision,modules:(r.modules??[]).slice(0,8).map(s=>ndText(s,120)),
+   history:{status:ndText(r.history?.status,50),observed:ndTime(r.history?.observed),source:ndURL(r.history?.source),priorAttempts:Number(r.history?.priorAttempts)||0,suppressed:r.history?.suppressed===true,held:r.history?.held===true,reason:ndText(r.history?.reason,140)},sendingAuthorized:false};
+   copy.assessment=assessmentView({...copy,assessment:r.assessment});return copy;
+ });
+ return {version:1,batchId:ndText(input.batchId,100),mode:'research_only',revision:input.revision,execution:'local_awake_runner',startedAt:ndTime(input.startedAt),finishedAt:ndTime(input.finishedAt),discoveryNote:ndText(input.discoveryNote,500),...(input.discoveryAudit?{discoveryAudit:copyDiscoveryAudit(input.discoveryAudit)}:{}),counts:{assessed:rows.length,identityMatched:rows.filter(r=>r.identityMatched).length,withContacts:rows.filter(r=>r.contacts.length).length,withOwners:rows.filter(r=>r.people.some(p=>p.owner)).length,observedOpportunity:rows.filter(r=>r.identityMatched&&r.activeOffer&&verifiedOpportunity(r)).length,signalsToReview:rows.filter(r=>r.activeOffer&&r.opportunities.some(o=>o.strength==='RESEARCH_SIGNAL')).length},rows,sendingAuthorized:false};
+}

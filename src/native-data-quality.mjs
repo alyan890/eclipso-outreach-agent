@@ -1,0 +1,42 @@
+// Research prioritization only. These scores cannot approve or send an email.
+import {matchesResearchIdentity} from './discovery-diagnostics.mjs';
+import {inspectWebsite,interpretSignal,websiteOpportunities,publishedContactOffer} from './business-evidence.mjs';
+import {opportunityLanes,laneOpportunities} from './opportunity-lanes.mjs';
+const categoryOffer={RESTAURANT:/restaurant|dining|our menu/i,CAFE:/cafe|café|coffee/i,DENTAL:/dentist|dental/i,CLINIC:/clinic|medical|healthcare/i,AESTHETICS:/salon|aesthetic|beauty|medspa|skin care/i,ROOFING:/roof/i,HVAC:/hvac|heating|air conditioning/i,PLUMBING:/plumb/i,LANDSCAPING:/landscap/i,CONSTRUCTION:/construction|contractor|remodel/i};
+export function currentPeople(people=[]){
+ const unique=new Map();
+ for(const p of people){
+  const title=String(p.title??''),proof=String(p.evidence??''),years=proof.match(/\b(?:18|19|20)\d{2}\b/g)??[];
+  if(/\b(?:this |the )?(?:website|web site|store)\s+is\s+operated\s+by\b/i.test(proof))continue;
+  const explicitOwner=(p.source!=='prose'&&/\b(?:co[- ]?)?owner\b/i.test(title))||/\b(?:owned(?:\s+and\s+operated)?\s+by|(?:is|are|as|our)\s+(?:the\s+)?(?:co[- ]?)?owner|currently\s+owns|co-owns)\b/i.test(proof);
+  const founderOnly=/founder|established|founded/i.test(title+' '+proof)&&!explicitOwner;
+  const historical=founderOnly&&years.some(y=>Number(y)<new Date().getUTCFullYear()-1);
+  const value={...p,owner:p.owner===true&&explicitOwner,...(founderOnly?{historical,title:historical?'Historical founder · current role unverified':'Founder · current ownership unverified',rank:0}:{})};
+  const key=String(p.full_name??'').normalize('NFKC').toLowerCase().replace(/[^a-z0-9]/g,'');if(!key)continue;
+  const old=unique.get(key);if(!old||Number(value.owner)>Number(old.owner))unique.set(key,value);
+ }
+ return [...unique.values()];
+}
+export function nativeResearchResult(record,pages,native,issues=[]){
+ const identityPages=pages.filter(p=>matchesResearchIdentity(record,p,pages)),matched=identityPages.length>0;
+ const key=url=>{try{const u=new URL(url);u.hash='';return u.href.replace(/\/$/,'');}catch{return '';}};
+ const rolePages=pages.filter(p=>identityPages.includes(p)||identityPages.some(home=>(home.followup_links??[]).some(l=>key(l.url)===key(p.source_url)&&new URL(home.source_url).hostname===new URL(p.source_url).hostname)));
+ const active=matched&&identityPages.some(p=>(record.research_identity||categoryOffer[record.category]?.test(p.visible_text))&&(/\b(?:our (?:services|menu|work)|general contractor|walk[- ]?ins|book|appointments?|order|opening hours|hours|we (?:offer|provide|serve)|call (?:us|to)|dining|dental care)\b/i.test(p.visible_text)||publishedContactOffer(p.visible_text)))&&!pages.some(p=>/\b(?:permanently closed|not yet open|closed for moving|temporarily closed)\b/i.test(p.visible_text));
+ const contacts=matched?(native.contacts??[]).flatMap(c=>{const proof=identityPages.find(p=>p.published_emails?.includes(c.email)&&!p.contact_contexts?.some(x=>x.email===c.email&&x.unrelated_credit));return proof?[{...c,association:'BUSINESS_PUBLISHED',source:proof.source_url,observed:proof.observed_at}]:[];}):[];
+ const allActions=pages.flatMap(p=>p.action_links??[]),booking=pages.some(p=>p.booking_signal==='HINT_PRESENT_UNVERIFIED')||allActions.some(l=>l.kind==='BOOKING'||/book|appointment|reserv/i.test(l.anchor+' '+l.url)),ordering=pages.some(p=>p.ordering_signal==='HINT_PRESENT_UNVERIFIED')||allActions.some(l=>l.kind==='ORDERING'||/order|delivery|takeout|toasttab|chownow|square.site/i.test(l.anchor+' '+l.url))||(native.signals??[]).some(s=>s.signal_code==='TECH_STACK'&&/shopify|woocommerce/i.test(s.value_text));
+ const websiteEvidence=inspectWebsite(pages,issues),opportunities=websiteOpportunities(websiteEvidence,matched);
+ const broader=opportunityLanes({business:record.business_name,category:record.category,website:record.website_url,country:record.country,identityMatched:matched,activeOffer:!!active,contacts,opportunities,websiteEvidence,bookingDetected:pages.some(p=>p.booking_widget_detected)||allActions.some(l=>/book|appointment|reserv/i.test(l.anchor+' '+l.url)&&!/cancel|delete|logout/i.test(l.url)),orderingDetected:pages.some(p=>p.ordering_widget_detected)||allActions.some(l=>/order|delivery|takeout/i.test(l.anchor+' '+l.url)&&!/cancel|delete|logout/i.test(l.url))},identityPages);
+ opportunities.push(...laneOpportunities(broader));
+ if(matched&&active&&['DENTAL','CLINIC','AESTHETICS'].includes(record.category)&&websiteEvidence.state!=='PLACEHOLDER_ONLY'){
+  const method=identityPages.map(p=>({page:p,quote:p.visible_text?.match(/(?:appointments?.{0,90}(?:over the phone|by phone|in[- ]person|via text)|(?:call|text).{0,65}(?:book|schedule|appointment))/i)?.[0]})).find(v=>v.quote&&(!booking||/\bonly\b|over the phone|in[- ]person/i.test(v.quote)));
+  if(method)opportunities.push({type:'APPOINTMENT_REQUEST_REVIEW',strength:'RESEARCH_SIGNAL',reason:`Published booking method: “${method.quote}”. ${/booking application/i.test(method.page.visible_text)?'Existing booking software is also mentioned. ':''}An additional request option is a hypothesis, not proof of a missing booking system.`,source:method.page.source_url,observed:method.page.observed_at});
+ }
+ if(matched&&active&&pages.length>=2&&!booking&&['DENTAL','CLINIC','AESTHETICS'].includes(record.category))opportunities.push({type:'BOOKING_REVIEW',strength:'RESEARCH_SIGNAL',reason:`No booking link detected across ${pages.length} checked pages; confirm the actual booking process.`,source:pages[0].source_url,observed:pages[0].observed_at});
+ if(matched&&active&&pages.length>=2&&!ordering&&['RESTAURANT','CAFE'].includes(record.category))opportunities.push({type:'ORDERING_REVIEW',strength:'RESEARCH_SIGNAL',reason:`No online ordering link detected across ${pages.length} checked pages; this does not establish absence or buying intent.`,source:pages[0].source_url,observed:pages[0].observed_at});
+ if(matched&&active&&!opportunities.length)opportunities.push({type:'WEBSITE_REVIEW',strength:'UNCONFIRMED',reason:'Business and website matched; no specific unmet need established.',source:pages[0].source_url,observed:pages[0].observed_at});
+ const signals=(native.signals??[]).map(s=>({code:s.signal_code,value:s.value_text?.trim()?s.value_text:s.value_num??null,upstreamConfidence:s.confidence,source:s.evidence_url,observed:pages.find(p=>p.source_url.replace(/\/$/,'')===s.evidence_url?.replace(/\/$/,''))?.observed_at??null,interpretation:interpretSignal(s)}));
+ const explicit=[];for(const p of identityPages){for(const m of (p.visible_text??'').matchAll(/\b(?:established|founded|owned|operated)\s+by\s+([A-Z][A-Za-z’'-]+(?:\s+[A-Z][A-Za-z’'-]+){1,3})\s*\((Owner[^)]{0,65})\)/g)){if(!(native.people??[]).some(x=>x.full_name===m[1]))explicit.push({full_name:m[1],title:m[2],owner:true,rank:3,source:'EXPLICIT_PUBLISHED_ROLE_GUARD',evidence:p.visible_text.slice(Math.max(0,m.index-60),m.index+m[0].length+80),evidence_url:p.source_url});}}
+ const people=currentPeople([...(native.people??[]),...rolePages.flatMap(p=>p.published_role_cards??[]),...explicit]);
+ const score=matched&&active?Math.min(100,40+(contacts.length?15:0)+(people.some(p=>p.owner)?10:0)+(opportunities.some(o=>o.strength==='VERIFIED_GAP')?30:opportunities.some(o=>o.strength==='RESEARCH_SIGNAL')?15:0)):0;
+ return {id:record.lead_id,business:record.business_name,category:record.category,address:record.address,city:record.city,state:record.state,country:record.country,website:record.website_url,source:record.source_url,sourceObserved:record.source_observed_at,researchedAt:new Date().toISOString(),identityMatched:matched,identityScope:record.research_identity?.scope??'SINGLE_LOCATION',locationEvidence:record.research_identity?.locations??[],activeOffer:!!active,priorityScore:score,priorityExplanation:'Research completeness and opportunity signal; not a probability of buying.',status:!matched?'IDENTITY_REVIEW':!active?'ACTIVITY_REVIEW':!contacts.length?'CONTACT_RESEARCH':opportunities.some(o=>o.strength==='VERIFIED_GAP')?'OPPORTUNITY_OBSERVED':opportunities.some(o=>o.strength==='RESEARCH_SIGNAL')?'OPPORTUNITY_TO_VERIFY':'NO_UNMET_NEED_ESTABLISHED',contacts,people:matched?people.slice(0,8):[],signals,opportunities,websiteEvidence,bookingDetected:booking,orderingDetected:ordering,pages:pages.map(p=>({source:p.source_url,observed:p.observed_at,title:p.title})),issues,revision:native.revision,modules:native.modules??[],history:{status:'NOT_CHECKED'},sendingAuthorized:false};
+}
