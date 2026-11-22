@@ -1,0 +1,23 @@
+# TEMPLATE ONLY. No account, credentials, deployment or paid resources are created.
+name = "eclipso-email-agent-pilot"
+main = "src/worker.mjs"
+compatibility_date = "2026-10-23"
+workers_dev = true
+
+[vars]
+MODULE1_ENABLED = "false"
+FREE_PLAN_CONFIRMED = "false"
+AGENT_MODE = "draft_only"
+DAILY_MODEL_CALL_LIMIT = "1"
+
+[ai]
+binding = "AI"
+
+[[d1_databases]]
+binding = "PILOT_DB"
+database_name = "eclipso-email-agent-pilot"
+database_id = "REPLACE_WITH_ISOLATED_FREE_D1_DATABASE_ID"
+
+[triggers]
+# UTC. Intentionally a bounded hourly job, not a continuously running server.
+crons = ["17 * * * *"]
